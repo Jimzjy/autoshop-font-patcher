@@ -1,0 +1,31 @@
+{
+  "name": "autoshop-font-patcher",
+  "version": "1.0.0",
+  "description": "修改汇川 AutoShop 编辑器字体的工具，支持任意已安装字体并一键还原",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "status": "node bin/autoshop-font-patcher.mjs status",
+    "list": "node bin/autoshop-font-patcher.mjs list",
+    "ui": "node bin/autoshop-font-ui.mjs",
+    "ui:open": "node bin/autoshop-font-ui.mjs --open",
+    "selftest": "node scripts/selftest.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "revert": "node bin/autoshop-font-patcher.mjs revert"
+  },
+  "keywords": [
+    "autoshop",
+    "inovance",
+    "scintilla",
+    "font",
+    "patcher",
+    "reverse-engineering"
+  ],
+  "license": "MIT"
+}
