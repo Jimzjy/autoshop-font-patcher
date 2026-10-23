@@ -29,7 +29,7 @@ if (run.processes.length > 0) {
 }
 
 console.log("AutoShop 已关闭，开始应用字体…");
-const r = applyPatch(FONT);
+const r = applyPatch({ font: FONT });
 console.log(`已应用：${r.font}（改动 ${r.changed.length} 处）`);
 
 // 独立校验：重新读文件逐项核对，不依赖上面的返回值

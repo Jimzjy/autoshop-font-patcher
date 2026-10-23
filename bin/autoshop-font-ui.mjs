@@ -15,6 +15,7 @@
 import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { getStatus, applyPatch, revertPatch, fonts } from "../lib/patch.mjs";
+import { THEMES, THEME_ROLES } from "../lib/theme.mjs";
 import { runningAutoShop, assertNotRunning } from "../lib/process.mjs";
 import { installedFonts, sortForDisplay } from "../lib/fonts.mjs";
 import { PAGE } from "../web/page.mjs";
@@ -81,11 +82,29 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/fonts") {
       return send(res, 200, { fonts: sortForDisplay(installedFonts()) });
     }
+    if (req.method === "GET" && url.pathname === "/api/themes") {
+      // 返回完整色表，供 UI 做色块预览与逐角色编辑
+      const themes = [
+        { key: "original", label: THEMES.original.label, colors: null },
+        ...Object.values(THEMES).filter((t) => t.key !== "original").map((t) => ({ key: t.key, label: t.label, colors: t.colors })),
+      ];
+      return send(res, 200, { themes, roles: THEME_ROLES });
+    }
     if (req.method === "POST" && url.pathname === "/api/apply") {
       const opts = await readBody(req);
+      // font / theme 各自独立：请求里带哪个字段就只改哪个维度，未带的保持现状。
+      const hasFont = typeof opts.font === "string" && opts.font.trim() !== "";
+      const hasTheme = typeof opts.theme === "string" && opts.theme.trim() !== "" && opts.theme !== "none";
+      if (!hasFont && !hasTheme) {
+        return send(res, 400, { ok: false, error: "请求里没有 font 或 theme，无需改动" });
+      }
       try {
         assertNotRunning({ kill: Boolean(opts.kill) });
-        const r = applyPatch(opts.font);
+        const r = applyPatch({
+          font: hasFont ? opts.font : null,
+          theme: hasTheme ? opts.theme : null,
+          colors: hasTheme && opts.theme === "custom" ? opts.colors : null,
+        });
         return send(res, 200, { ok: true, ...r, state: { ...getStatus(), running: runningAutoShop({ fresh: true }) } });
       } catch (e) {
         return send(res, 400, { ok: false, error: String(e.message ?? e), state: { ...getStatus(), running: runningAutoShop({ fresh: true }) } });
@@ -131,4 +150,31 @@ function listen(port, triesLeft = 10) {
     }
   });
 }
-listen(Number(process.env.PORT) || 8791);
+/** 用系统默认浏览器打开 URL，不闪控制台窗口。 */
+function openBrowser(url) {
+  try { execFileSync("rundll32", ["url.dll,FileProtocolHandler", url], { windowsHide: true }); } catch {}
+}
+
+/** 探测是否已有工具实例在 8791–8800 上运行；是则返回其地址。 */
+async function findRunningInstance() {
+  for (let port = 8791; port <= 8800; port++) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/whoami`, { signal: AbortSignal.timeout(400) });
+      if (r.ok) return `http://127.0.0.1:${port}`;
+    } catch {}
+  }
+  return null;
+}
+
+async function main() {
+  if (process.argv.includes("--open")) {
+    const existing = await findRunningInstance();
+    if (existing) {
+      console.log("工具已在运行：" + existing + "，直接打开界面，不重复启动。");
+      openBrowser(existing);
+      return;
+    }
+  }
+  listen(Number(process.env.PORT) || 8791);
+}
+main();

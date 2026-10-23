@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import { fonts, SITES, SLOT, getStatus, preflight, checkSlot, BUILTIN_FONTS, buildPatch } from "../lib/patch.mjs";
 import { parsePe, offsetToAbs, sectionAt } from "../lib/pe.mjs";
+import { COLOR_SITES, THEMES, preflightTheme, rgb2colorref } from "../lib/theme.mjs";
 import { runningAutoShop } from "../lib/process.mjs";
 
 let pass = 0, fail = 0;
@@ -102,6 +103,116 @@ console.log("\n=== 补丁构建（纯内存，不落盘）===");
     let threw = false;
     try { buildPatch(buf, name); } catch { threw = true; }
     check(`${label} 被拒绝`, threw);
+  }
+}
+
+console.log("\n=== 配色站点（主题表与 exe 对照，只读）===");
+{
+  check("配色站点数量为 89", COLOR_SITES.length === 89, `得到 ${COLOR_SITES.length}`);
+  check("内置主题为 original,dark,atomOneDark,githubDark",
+    Object.keys(THEMES).join(",") === "original,dark,atomOneDark,githubDark", Object.keys(THEMES).join(","));
+
+  // 每个内置主题必须覆盖全部 89 个站点的角色
+  for (const tk of ["dark", "atomOneDark", "githubDark"]) {
+    const missing = COLOR_SITES
+      .filter((s) => s.kind === "fore" && !THEMES[tk].colors.fore[s.role])
+      .map((s) => s.role);
+    check(`主题 ${tk} 覆盖全部角色`, missing.length === 0, [...new Set(missing)].join(","));
+  }
+
+  const dark = THEMES.dark;
+  const expectedOf = (s) =>
+    s.kind === "caret" ? dark.colors.caret
+    : s.kind === "back" ? dark.colors.back
+    : s.kind === "codepage" ? null
+    : dark.colors.fore[s.role];
+  const notKnown = [];
+  for (const s of COLOR_SITES) {
+    const cur = buf.readUInt32LE(s.off + 1);
+    const exp = expectedOf(s);
+    const known = cur === s.from || (exp != null && cur === rgb2colorref(exp)) || cur === s.prevTo;
+    if (!known) notKnown.push(`${s.key}@0x${s.off.toString(16)} 现值=0x${cur.toString(16)}`);
+  }
+  check("89 处配色站点全部可识别（原始/已应用/旧版主题）", notKnown.length === 0, notKnown.join(" "));
+
+  const dup = COLOR_SITES.map((s) => s.off).filter((o, i, a) => a.indexOf(o) !== i);
+  check("配色站点偏移无重复", dup.length === 0, dup.join(","));
+  const overlap = COLOR_SITES.filter((c) => SITES.some((f) => Math.abs(f - c.off) < 8));
+  check("配色站点与字体站点无重叠", overlap.length === 0, overlap.map((c) => c.key).join(","));
+
+  // 纯内存构建「字体+暗色主题」补丁，验证 82 处全部落到目标色
+  try {
+    const { buf: out } = buildPatch(buf, "Consolas", "dark");
+    const bad = COLOR_SITES.filter((s) => {
+      if (s.kind === "codepage") return out.readUInt32LE(s.off + 1) !== s.from; // 代码页保持原值
+      return out.readUInt32LE(s.off + 1) !== rgb2colorref(expectedOf(s));
+    });
+    check("能构建「字体+暗色主题」补丁", bad.length === 0, bad.map((s) => s.key).join(","));
+  } catch (e) {
+    check("能构建「字体+暗色主题」补丁", false, String(e.message || e).slice(0, 120));
+  }
+
+  // 两个新主题 + 自定义主题（含 custom→custom 迁移）也能全量构建
+  try {
+    for (const tk of ["atomOneDark", "githubDark"]) buildPatch(buf, null, tk);
+    check("能构建 atomOneDark/githubDark 补丁", true);
+  } catch (e) {
+    check("能构建 atomOneDark/githubDark 补丁", false, String(e.message || e).slice(0, 120));
+  }
+  try {
+    const { resolveTheme } = await import("../lib/theme.mjs");
+    const custom = JSON.parse(JSON.stringify(THEMES.githubDark.colors));
+    custom.fore["注释"] = "#123456";
+    const a = buildPatch(buf, null, "custom", { customColors: custom });
+    const b = buildPatch(a.buf, null, "custom", { customColors: custom, prevCustomColors: custom });
+    const bad = COLOR_SITES.filter((s) => {
+      if (s.kind === "codepage") return b.buf.readUInt32LE(s.off + 1) !== s.from;
+      return b.buf.readUInt32LE(s.off + 1) !== rgb2colorref(
+        s.kind === "caret" ? custom.caret : s.kind === "back" ? custom.back : custom.fore[s.role]);
+    });
+    check("自定义主题可构建且可从自定义状态再次应用", bad.length === 0, bad.map((s) => s.key).join(","));
+  } catch (e) {
+    check("自定义主题可构建且可从自定义状态再次应用", false, String(e.message || e).slice(0, 120));
+  }
+}
+
+console.log("\n=== SciLexer.dll（选区/光标站点，只读）===");
+{
+  const { dllPath, DLL_SITES, preflightDll } = await import("../lib/scilexer.mjs");
+  const DLL_PATH = dllPath();
+  check("SciLexer.dll 存在", fs.existsSync(DLL_PATH), DLL_PATH);
+  check("SciLexer.dll 备份存在", fs.existsSync(DLL_PATH + ".bak"));
+  if (fs.existsSync(DLL_PATH)) {
+    const dll = fs.readFileSync(DLL_PATH);
+    check("DLL 站点数量为 9", DLL_SITES.length === 9, String(DLL_SITES.length));
+    const bad = preflightDll(dll);
+    check("DLL 9 处站点现值可识别（原始/各主题目标）", bad.length === 0, bad.join(" "));
+  }
+}
+
+console.log("\n=== flashfix（闪白修复注入，只读）===");
+{
+  const { flashfixAssetPath, embedFlashfix, stripFlashfix, scilexerHasFlashfix, flashfixWanted } =
+    await import("../lib/flashfix.mjs");
+  const asset = flashfixAssetPath();
+  check("flashfix.dll 资源存在", fs.existsSync(asset), asset);
+  if (fs.existsSync(asset)) {
+    const hdr = fs.readFileSync(asset);
+    check("flashfix.dll 是 32 位 PE 且带 FlashFixInit 导出",
+      hdr.readUInt16LE(hdr.readUInt32LE(0x3c) + 4) === 0x14c && hdr.includes("FlashFixInit"),
+      `size=${hdr.length}`);
+  }
+  // 用备份的原始 DLL 做注入/还原往返（不碰安装文件）
+  const backup = fs.existsSync(asset) ? fs.readFileSync(asset) : null;
+  const { dllBackup } = await import("../lib/scilexer.mjs");
+  const bk = dllBackup();
+  if (backup && fs.existsSync(bk)) {
+    const orig = fs.readFileSync(bk);
+    const emb = embedFlashfix(orig);
+    check("DLL 可注入 flashfix 导入", emb.changed && scilexerHasFlashfix(emb.buf));
+    check("DLL 注入幂等", !embedFlashfix(emb.buf).changed);
+    check("DLL 可还原为原始字节", stripFlashfix(emb.buf).buf.equals(orig));
+    check("暗色主题启用闪白修复，原始主题不启用", flashfixWanted("dark") && !flashfixWanted("original"));
   }
 }
 

@@ -6,7 +6,9 @@
  *   node bin/autoshop-font-patcher.mjs status                        查看状态与逐点字节预检
  *   node bin/autoshop-font-patcher.mjs list                          列出内置字体与落点容量
  *   node bin/autoshop-font-patcher.mjs install                       应用默认字体 Consolas
- *   node bin/autoshop-font-patcher.mjs install --font "Cascadia Mono"  换成指定字体
+ *   node bin/autoshop-font-patcher.mjs install --font "Cascadia Mono"  换成指定字体（不动配色）
+ *   node bin/autoshop-font-patcher.mjs install --theme dark          只应用暗色主题（不动字体）
+ *   node bin/autoshop-font-patcher.mjs install --theme original      恢复原始配色
  *   node bin/autoshop-font-patcher.mjs revert                        从备份完整还原
  *
  * 需要先关闭 AutoShop。
@@ -25,11 +27,18 @@ function printStatus() {
   console.log(`备份      : ${s.backupExists ? fonts.backup : "不存在"}`);
   console.log(`补丁状态  : ${s.patched ? "已应用（与记录一致）" : s.isOriginal === true ? "原始版本" : s.isOriginal === false ? "已变化（哈希与记录不符）" : "未知"}`);
   console.log(`记录字体  : ${s.recordedFont ?? "(无)"}`);
+  console.log(`记录主题  : ${s.recordedTheme ?? "(无)"}`);
   console.log(`落点字体  : "${s.slotName}"`);
   console.log(`落点体检  : ${s.slotCheck.ok ? "通过" : "★ 无效"} (段 ${s.slotCheck.section}, VA 0x${s.slotCheck.va?.toString(16)}${s.slotCheck.reason ? ", " + s.slotCheck.reason : ""})`);
   console.log("\n7 处站点逐字节预检：");
   for (const r of s.sites) {
     console.log(`  ${r.key.padEnd(6)} off=0x${r.off.slice(2).padStart(8, "0")}  ${r.isOriginal ? "原始" : "已改 "}  ->  ${r.ok ? r.target : "★ 非 push 指令"}`);
+  }
+  if (s.themeSites.length) {
+    const bad = s.themeSites.filter((r) => !r.ok);
+    const themed = s.themeSites.filter((r) => r.state === "主题色").length;
+    console.log(`\n配色站点（主题 ${s.recordedTheme}）：${s.themeSites.length} 处，其中 ${themed} 处已是主题色${bad.length ? `，★ ${bad.length} 处不符` : ""}`);
+    for (const r of bad) console.log(`  ★ ${r.key}(${r.role}) @${r.off}`);
   }
 }
 
@@ -44,19 +53,32 @@ function printList() {
   console.log("\n提示：字体名必须与系统内完全一致。拼错时 Windows 会静默回退，界面看起来毫无变化。");
 }
 
-function parseFontArg() {
+function parseArgs() {
   const args = process.argv.slice(2);
-  let name = null;
-  for (let i = 0; i < args.length; i++) if (args[i] === "--font" && args[i + 1]) name = args[i + 1];
-  return name ?? "Consolas";
+  let name = null, theme = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--font" && args[i + 1]) name = args[i + 1];
+    if (args[i] === "--theme" && args[i + 1]) theme = args[i + 1];
+  }
+  // null = 该维度保持现状；"none" 保留兼容含义：不动配色
+  return { font: name, theme: theme === "none" ? null : theme };
 }
 
 function doInstall() {
-  const font = parseFontArg();
+  const { font, theme } = parseArgs();
+  if (!font && !theme) {
+    console.error("install 需要至少一个选项：--font \"<名称>\" 或 --theme dark|original");
+    process.exit(2);
+  }
   assertNotRunning();
-  const r = applyPatch(font);
-  console.log(`\n已应用字体：${r.font}${r.builtin ? "（exe 内置字符串）" : `（写入空闲区 0x${SLOT.off.toString(16)}）`}`);
-  console.log(`改动站点  ：${r.changed.length} 处 ${r.changed.join(", ") || "(指针原本就指向它)"}`);
+  const r = applyPatch({ font, theme });
+  if (r.fontChanged) {
+    console.log(`已应用字体：${r.font}${r.builtin ? "（exe 内置字符串）" : `（写入空闲区 0x${SLOT.off.toString(16)}）`}`);
+    console.log(`改动站点  ：${r.changed.length} 处 ${r.changed.join(", ") || "(指针原本就指向它)"}`);
+  } else {
+    console.log(`字体未改动：${r.font ?? "（尚未应用过，保持原始）"}`);
+  }
+  if (theme) console.log(`配色      ：${theme === "original" ? "恢复原始配色" : theme}（配色站点改动 ${r.themeChanged.length} 处）`);
   console.log(`字节总数  ：${r.size}（与原文件一致，未增删）`);
   console.log(`新哈希    ：${r.hash}`);
   console.log("\n启动 AutoShop 打开一个含代码/指令表的程序查看效果。");
@@ -76,7 +98,7 @@ try {
   else if (cmd === "install") doInstall();
   else if (cmd === "revert") doRevert();
   else {
-    console.error(`未知命令：${cmd}\n用法：status | list | install [--font "<名称>"] | revert`);
+    console.error(`未知命令：${cmd}\n用法：status | list | install [--font "<名称>"] [--theme dark|original] | revert`);
     process.exit(2);
   }
 } catch (e) {
