@@ -120,20 +120,25 @@ console.log("\n=== 配色站点（主题表与 exe 对照，只读）===");
     check(`主题 ${tk} 覆盖全部角色`, missing.length === 0, [...new Set(missing)].join(","));
   }
 
-  const dark = THEMES.dark;
-  const expectedOf = (s) =>
-    s.kind === "caret" ? dark.colors.caret
-    : s.kind === "back" ? dark.colors.back
-    : s.kind === "codepage" ? null
-    : dark.colors.fore[s.role];
+  // 允许集合 = 各站点原始值 ∪ 所有内置主题对该站点的目标色
+  const themeTargets = (s) => {
+    const set = new Set();
+    for (const t of Object.values(THEMES)) {
+      const c = t.colors;
+      if (!c) continue; // original 无色表
+      if (s.kind === "caret") set.add(rgb2colorref(c.caret));
+      else if (s.kind === "back") set.add(rgb2colorref(c.back));
+      else if (s.kind !== "codepage") set.add(rgb2colorref(c.fore[s.role]));
+    }
+    return set;
+  };
   const notKnown = [];
   for (const s of COLOR_SITES) {
     const cur = buf.readUInt32LE(s.off + 1);
-    const exp = expectedOf(s);
-    const known = cur === s.from || (exp != null && cur === rgb2colorref(exp)) || cur === s.prevTo;
+    const known = cur === s.from || cur === s.prevTo || themeTargets(s).has(cur);
     if (!known) notKnown.push(`${s.key}@0x${s.off.toString(16)} 现值=0x${cur.toString(16)}`);
   }
-  check("89 处配色站点全部可识别（原始/已应用/旧版主题）", notKnown.length === 0, notKnown.join(" "));
+  check("89 处配色站点全部可识别（原始/已应用/任意内置主题）", notKnown.length === 0, notKnown.join(" "));
 
   const dup = COLOR_SITES.map((s) => s.off).filter((o, i, a) => a.indexOf(o) !== i);
   check("配色站点偏移无重复", dup.length === 0, dup.join(","));
@@ -143,6 +148,11 @@ console.log("\n=== 配色站点（主题表与 exe 对照，只读）===");
   // 纯内存构建「字体+暗色主题」补丁，验证 82 处全部落到目标色
   try {
     const { buf: out } = buildPatch(buf, "Consolas", "dark");
+    const darkColors = THEMES.dark.colors;
+    const expectedOf = (s) =>
+      s.kind === "caret" ? darkColors.caret
+      : s.kind === "back" ? darkColors.back
+      : darkColors.fore[s.role];
     const bad = COLOR_SITES.filter((s) => {
       if (s.kind === "codepage") return out.readUInt32LE(s.off + 1) !== s.from; // 代码页保持原值
       return out.readUInt32LE(s.off + 1) !== rgb2colorref(expectedOf(s));
