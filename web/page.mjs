@@ -155,6 +155,7 @@ let THEMES = [];          // [{key,label,colors}]
 let ROLES = [];           // 展示顺序
 let curColors = {};       // role -> '#rrggbb'（背景/光标也在内）
 let presetDirty = false;  // 用户是否手动改过颜色
+let serverCustom = null;  // 服务器记录的 customColors（patch.json）
 
 function getColors(key) {
   const t = THEMES.find(x => x.key === key);
@@ -210,6 +211,17 @@ function ensureCustomOption() {
 }
 
 function loadPreset(key) {
+  if (key === 'custom') {
+    // 自定义：色表可编辑，沿用当前编辑值；为空则用服务器记录或 dark 预设打底
+    if (!Object.keys(curColors).length) {
+      const src = serverCustom || getColors('dark');
+      for (const r of ROLES) curColors[r] = roleColor(src, r) || '#000000';
+    }
+    presetDirty = true;
+    renderColorGrid(false);
+    renderPreview();
+    return;
+  }
   const colors = getColors(key);
   presetDirty = false;
   if (!colors) { // 亮色（恢复原始）：颜色不可编辑
@@ -337,6 +349,7 @@ async function refresh() {
 
   THEMES = t.themes || [];
   ROLES = t.roles || [];
+  serverCustom = s.recordedCustomColors || null;
   if (!Object.keys(curColors).length) {
     // 首次：用服务器记录的当前主题初始化色表
     if (s.recordedTheme === 'custom' && s.recordedCustomColors) {
